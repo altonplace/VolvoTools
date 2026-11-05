@@ -111,6 +111,7 @@ std::vector<uint8_t> D2Request::process(ICanChannel& channel, size_t timeout, si
             if (!(header & 0x80) || response.data.size() < 3 ||
                 response.data[1] != ecuId ||
                 (response.data[2] != 0x7F && response.data[2] != requestId[0] + 0x40)) {
+                LOG_MODULE(DEBUG) << "Skipped frame: " << dumpArray(response.data);
                 continue;
             }
             // Заголовок первого фрейма: 0x88..0x8F / 0xC8..0xCF без флага серии,

@@ -19,6 +19,8 @@
 #include <common/LogHelper.hpp>
 
 #include <algorithm>
+#include <cstdlib>
+#include <iostream>
 #include <chrono>
 #include <numeric>
 #include <ios>
@@ -44,8 +46,28 @@ namespace logger {
 	private:
 		virtual void registerParameters(common::ICanChannel& channel,
 			const LogParameters& parameters) override {
-            common::D2Request unregisterRequest{common::D2Messages::unregisterAllMemoryRequest};
-            unregisterRequest.process(channel);
+            // Probe: ask the ECM for its identification first, so a log shows
+            // whether it answers D2 at all on this bus.
+            try {
+                common::D2Request probe{ common::D2Message(
+                    static_cast<uint8_t>(common::D2ECUType::ECM_ME), {0xB9, 0xF0}) };
+                const auto id{ probe.process(channel) };
+                LOG_MODULE(INFO) << "ECM B9F0 answer: " << common::dumpArray(id);
+                std::cout << "ECM answered identification (B9F0): " << id.size() << " bytes" << std::endl;
+            }
+            catch (const std::exception& ex) {
+                LOG_MODULE(ERROR) << "ECM B9F0 probe failed: " << ex.what();
+                std::cout << "ECM did not answer identification (B9F0): " << ex.what() << std::endl;
+            }
+            // Some ME7 builds don't answer "unregister all"; carry on without it.
+            try {
+                common::D2Request unregisterRequest{common::D2Messages::unregisterAllMemoryRequest};
+                unregisterRequest.process(channel);
+            }
+            catch (const std::exception& ex) {
+                LOG_MODULE(ERROR) << "Unregister-all not answered, continuing: " << ex.what();
+                std::cout << "Unregister-all not answered, continuing" << std::endl;
+            }
             for (const auto parameter : parameters.parameters()) {
                 common::D2Request registerParameterRequest{
 					common::D2Messages::makeRegisterAddrRequest(parameter.addr(),
@@ -445,6 +467,12 @@ namespace logger {
     std::unique_ptr<LoggerImpl> createLoggerImpl(common::CarPlatform carPlatform, uint32_t cmId, const std::string& cmInfo)
 	{
 		using common::CarPlatform;
+        if (cmId == to_underlying(common::D2ECUType::ECM_ME) && std::getenv("VT_ECM_BB")
+            && (carPlatform == CarPlatform::P80 || carPlatform == CarPlatform::P2
+                || carPlatform == CarPlatform::P2_250)) {
+            std::cout << "ECM: reading one address at a time (D2 0xBB)" << std::endl;
+            return std::make_unique<D2BBLoggerImpl>(cmId);
+        }
         if (cmId == to_underlying(common::D2ECUType::ECM_ME)
             && (carPlatform == CarPlatform::P80 || carPlatform == CarPlatform::P1
 			|| carPlatform == CarPlatform::P2 || carPlatform == CarPlatform::P2_250)) {
