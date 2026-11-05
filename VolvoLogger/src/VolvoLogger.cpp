@@ -1,3 +1,4 @@
+#include <cstdlib>
 #include "FileLogWriter.hpp"
 #include "LoggerApplication.hpp"
 
@@ -112,8 +113,15 @@ int main(int argc, const char *argv[]) {
           logger::LoggerApplication::instance().start(
               *j2534, params, carPlatform, cmId,
               {&fileLogWriter, &consoleLogWriter});
+          // VT_SECONDS stops logging after that many seconds (for memory sweeps).
+          const char* secondsEnv = std::getenv("VT_SECONDS");
+          const int maxSeconds = secondsEnv ? std::atoi(secondsEnv) : 0;
+          int elapsed = 0;
           while (logger::LoggerApplication::instance().isStarted()) {
             std::this_thread::sleep_for(std::chrono::seconds(1));
+            if (maxSeconds > 0 && ++elapsed >= maxSeconds) {
+              break;
+            }
           }
           logger::LoggerApplication::instance().stop();
         } catch (const std::exception &ex) {
