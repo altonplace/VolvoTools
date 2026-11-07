@@ -23,6 +23,7 @@
 #include <iostream>
 #include <chrono>
 #include <numeric>
+#include <stdexcept>
 #include <ios>
 #include <sstream>
 
@@ -37,6 +38,12 @@ namespace logger {
 		virtual std::vector<uint32_t>
 			requestMemory(common::ICanChannel& channel,
 				const LogParameters& parameters) = 0;
+	};
+
+	// The ECM answered, but without the registered data.
+	class ShortReplyError : public std::runtime_error {
+	public:
+		using std::runtime_error::runtime_error;
 	};
 
 	class D2LoggerImpl : public LoggerImpl {
@@ -81,7 +88,26 @@ namespace logger {
 			const LogParameters& parameters) override
         {
             common::D2Request requestMemory{ common::D2Messages::requestMemory };
+            const auto requestStart{ std::chrono::steady_clock::now() };
             auto data { requestMemory.process(channel) };
+            const auto requestMs{ std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - requestStart).count() };
+            if (requestMs > 500) {
+                LOG_MODULE(ERROR) << "Slow memory reply: " << requestMs << " ms";
+            }
+
+            // A reply shorter than the registered list means the ECM no longer
+            // holds our addresses (reset, or it dropped them). Say so instead of
+            // logging zeros, so the caller can re-register.
+            size_t expectedSize = 0;
+            for (const auto& param : parameters.parameters()) {
+                expectedSize += param.size();
+            }
+            if (data.size() < expectedSize) {
+                LOG_MODULE(ERROR) << "Short memory reply: " << data.size() << " of "
+                                  << expectedSize << " bytes: " << common::dumpArray(data);
+                throw ShortReplyError("Short memory reply");
+            }
 
             std::vector<uint32_t> result(parameters.parameters().size());
             size_t paramIndex = 0;
@@ -622,6 +648,21 @@ namespace logger {
                     now - startTimepoint),
                     std::move(logRecord)));
                 errorCount = 0;
+            }
+            catch(const ShortReplyError&) {
+                // Errors stay counted so a dead link still ends the run.
+                ++errorCount;
+                std::cout << "ECM dropped the logged addresses, registering them again" << std::endl;
+                try {
+                    channel->clearRx();
+                    channel->clearTx();
+                    _loggerImpl->registerParameters(*channel, _parameters);
+                    LOG_MODULE(INFO) << "Re-registered " << _parameters.parameters().size() << " addresses";
+                    std::cout << "Registered again" << std::endl;
+                }
+                catch(const std::exception& ex) {
+                    LOG_MODULE(ERROR) << "Re-register failed: " << ex.what();
+                }
             }
             catch(const std::exception& ex) {
                 LOG_MODULE(ERROR) << ex.what();
